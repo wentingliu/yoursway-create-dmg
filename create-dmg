@@ -1,4 +1,4 @@
-#! /bin/bash
+#!/bin/bash
 
 # Create a read-only disk image of the contents of a folder
 
@@ -10,6 +10,20 @@ function pure_version() {
 
 function version() {
   echo "create-dmg $(pure_version)"
+}
+
+function setFilePngIcon() {
+  echo $1 
+  echo $2
+  FILE=$1
+  ICON=$2
+  cp $ICON tmpicn.png
+  sips -i tmpicn.png 
+  DeRez -only icns tmpicn.png > tmpicns.rsrc
+  Rez -append tmpicns.rsrc -o $FILE
+  SetFile -a C $FILE
+  rm tmpicn.png
+  rm tmpicns.rsrc
 }
 
 function usage() {
@@ -34,8 +48,8 @@ function usage() {
   echo "      set position of the file's icon"
   echo "  --hide-extension file_name"
   echo "      hide the extension of file"
-  echo "  --custom-icon file_name custom_icon_or_sample_file x y"
-  echo "      set position and custom icon"
+  echo "  --custom-icon custom_icon file_name x y"
+  echo "      set custom icon and position "
   echo "  --app-drop-link x y"
   echo "      make a drop link to Applications, at location x,y"
   echo "  --eula eula_file"
@@ -52,6 +66,9 @@ WINY=60
 WINW=500
 WINH=350
 ICON_SIZE=128
+NEWLINE=$'\n'
+RESOURCES_STRS=()
+RESOURCE_COUNT=0
 
 while test "${1:0:1}" = "-"; do
   case $1 in
@@ -76,13 +93,15 @@ while test "${1:0:1}" = "-"; do
       WINW=$2; WINH=$3
       shift; shift; shift;;
     --icon)
-      POSITION_CLAUSE="${POSITION_CLAUSE}set position of item \"$2\" to {$3, $4}
-"
+      POSITION_CLAUSE="${POSITION_CLAUSE}set position of item \"$2\" to {$3, $4}"
       shift; shift; shift; shift;;
     --hide-extension)
       HIDING_CLAUSE="${HIDING_CLAUSE}set the extension hidden of item \"$2\" to true"
       shift; shift;;
     --custom-icon)
+      RESOURCE_COUNT=$(($RESOURCE_COUNT + 1)) 
+      resource_str="${2};${3};${4};${5}"
+      RESOURCES_STRS+=("${resource_str}")
       shift; shift; shift; shift; shift;;
     -h | --help)
       usage;;
@@ -92,8 +111,7 @@ while test "${1:0:1}" = "-"; do
       pure_version; exit 0;;
     --app-drop-link)
       APPLICATION_LINK=$2
-      APPLICATION_CLAUSE="set position of item \"Applications\" to {$2, $3}
-"
+      APPLICATION_CLAUSE="set position of item \"Applications\" to {$2, $3}"
       shift; shift; shift;;
     --eula)
       EULA_RSRC=$2
@@ -107,17 +125,12 @@ while test "${1:0:1}" = "-"; do
   esac
 done
 
-test -z "$2" && {
-  echo "Not enough arguments. Invoke with --help for help."
-  exit 1
-}
-
 DMG_PATH="$1"
 DMG_DIRNAME="$(dirname "$DMG_PATH")"
 DMG_DIR="$(cd $DMG_DIRNAME > /dev/null; pwd)"
 DMG_NAME="$(basename "$DMG_PATH")"
 DMG_TEMP_NAME="$DMG_DIR/rw.${DMG_NAME}"
-SRC_FOLDER="$(cd "$2" > /dev/null; pwd)"
+RESOURCE_TEMP_PATH="$DMG_DIR/resources_temp"
 test -z "$VOLUME_NAME" && VOLUME_NAME="$(basename "$DMG_PATH" .dmg)"
 
 AUX_PATH="$(dirname $0)/support"
@@ -127,21 +140,43 @@ test -d "$AUX_PATH" || {
   exit 1
 }
 
-if [ -f "$SRC_FOLDER/.DS_Store" ]; then
+if [ -f "$RESOURCE_TEMP_PATH/.DS_Store" ]; then
     echo "Deleting any .DS_Store in source folder"
-    rm "$SRC_FOLDER/.DS_Store"
+    rm "$RESOURCE_TEMP_PATH/.DS_Store"
 fi
+
+rm -rf "$RESOURCE_TEMP_PATH"
+mkdir "$RESOURCE_TEMP_PATH"
+
+# Set icon for resources 
+for (( i = 0 ; i < $RESOURCE_COUNT ; i++ )) ; do
+  IFS=";"
+  set -- ${RESOURCES_STRS[$i]}
+  icon_path=$1
+  resource_path=$2
+  resource_name=$(basename $resource_path)
+  temp_resource_path="${RESOURCE_TEMP_PATH}/${resource_name}"
+  echo "$resource_path   $temp_resource_path"
+  cp "$resource_path" "$temp_resource_path"
+  echo "set ${icon_path} to ${temp_resource_path}"  
+  xattr -c "$temp_resource_path"
+  setFileIcon "$icon_path" "$temp_resource_path"
+  IFS=" "
+done
 
 # Create the image
 echo "Creating disk image..."
 test -f "${DMG_TEMP_NAME}" && rm -f "${DMG_TEMP_NAME}"
-ACTUAL_SIZE=`du -sm "$SRC_FOLDER" | sed -e 's/	.*//g'`
+ACTUAL_SIZE=$(du -sm "$RESOURCE_TEMP_PATH" | awk '{print $1}')
 DISK_IMAGE_SIZE=$(expr $ACTUAL_SIZE + 20)
-hdiutil create -srcfolder "$SRC_FOLDER" -volname "${VOLUME_NAME}" -fs HFS+ -fsargs "-c c=64,a=16,e=16" -format UDRW -size ${DISK_IMAGE_SIZE}m "${DMG_TEMP_NAME}"
+hdiutil create -srcfolder "$RESOURCE_TEMP_PATH" -volname "${VOLUME_NAME}" -fs HFS+ -fsargs "-c c=64,a=16,e=16" -format UDRW -size ${DISK_IMAGE_SIZE}m "${DMG_TEMP_NAME}"
+rm -rf "$RESOURCE_TEMP_PATH"
+echo "disk image is created..."
 
 # mount it
 echo "Mounting disk image..."
 MOUNT_DIR="/Volumes/${VOLUME_NAME}"
+echo "mounted dir is $MOUNT_DIR"
 
 # try unmount dmg if it was mounted previously (e.g. developer mounted dmg, installed app and forgot to unmount it)
 echo "Unmounting disk image..."
@@ -170,12 +205,27 @@ if ! test -z "$VOLUME_ICON_FILE"; then
   SetFile -c icnC "$MOUNT_DIR/.VolumeIcon.icns"
 fi
 
+echo incC 
+echo "$MOUNT_DIR/.VolumeIcon.icns" 
+
 # run applescript
 APPLESCRIPT=$(mktemp -t createdmg)
 cat "$AUX_PATH/template.applescript" | sed -e "s/WINX/$WINX/g" -e "s/WINY/$WINY/g" -e "s/WINW/$WINW/g" -e "s/WINH/$WINH/g" -e "s/BACKGROUND_CLAUSE/$BACKGROUND_CLAUSE/g" -e "s/ICON_SIZE/$ICON_SIZE/g" | perl -pe  "s/POSITION_CLAUSE/$POSITION_CLAUSE/g" | perl -pe "s/APPLICATION_CLAUSE/$APPLICATION_CLAUSE/g" | perl -pe "s/HIDING_CLAUSE/$HIDING_CLAUSE/" >"$APPLESCRIPT"
 
 echo "Running Applescript: /usr/bin/osascript \"${APPLESCRIPT}\" \"${VOLUME_NAME}\""
 "/usr/bin/osascript" "${APPLESCRIPT}" "${VOLUME_NAME}" || true
+for (( i = 0 ; i < $RESOURCE_COUNT ; i++ )) ; do
+  IFS=";"
+  set -- ${RESOURCES_STRS[$i]}
+  resource_path=$2
+  resource_name=$(basename $resource_path)
+  pos_x=$3
+  pos_y=$4
+  dmg_resource_path="${MOUNT_DIR}/${resource_name}"
+  osascript "$AUX_PATH/set_file_position.applescript" "$dmg_resource_path" $pos_x $pos_y
+  IFS=" "
+done
+
 echo "Done running the applescript..."
 sleep 4
 
