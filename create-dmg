@@ -157,7 +157,7 @@ for (( i = 0 ; i < $RESOURCE_COUNT ; i++ )) ; do
   resource_name=$(basename $resource_path)
   temp_resource_path="${RESOURCE_TEMP_PATH}/${resource_name}"
   echo "$resource_path   $temp_resource_path"
-  cp "$resource_path" "$temp_resource_path"
+  cp -R "$resource_path" "$temp_resource_path"
   echo "set ${icon_path} to ${temp_resource_path}"  
   xattr -c "$temp_resource_path"
   setFileIcon "$icon_path" "$temp_resource_path"
